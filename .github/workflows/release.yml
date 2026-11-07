@@ -54,7 +54,7 @@ jobs:
         run: |
           curl -sSfL -o sv "https://github.com/slsa-framework/slsa-verifier/releases/download/v2.7.1/slsa-verifier-linux-amd64"
           chmod +x sv && sudo mv sv /usr/local/bin/slsa-verifier
-          curl -sSfL -o opa "https://github.com/openpolicyagent/opa/releases/download/v1.22.2/opa_linux_amd64_static"
+          curl -sSfL -o opa "https://github.com/open-policy-agent/opa/releases/download/v1.21.4/opa_linux_amd64_static"
           chmod +x opa && sudo mv opa /usr/local/bin/opa
 
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
