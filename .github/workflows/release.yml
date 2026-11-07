@@ -64,13 +64,24 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # ---- verification: only *verified* data enters the evidence bundle ----
-      - name: Verify SLSA L3 provenance (slsa-verifier)
+      # Native SLSA L3 provenance: the generator stores it in the legacy
+      # `.att` tag; slsa-verifier verifies it against a pinned builder id
+      # (the tag-pinned slsa-github-generator) and our repo. --print-provenance
+      # emits verified in-toto statements (one JSON per line) for evidence.json.
+      - name: Verify SLSA L3 provenance (slsa-verifier, builder pinned)
         id: prov
+        env:
+          BUILDER_ID: "https://github.com/slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@refs/tags/v2.1.0"
         run: |
           set +e
-          slsa-verifier verify-image "$IMAGE@$DIGEST" --source-uri "$SOURCE"
+          slsa-verifier verify-image "$IMAGE@$DIGEST" \
+            --builder-id "$BUILDER_ID" \
+            --source-uri "$SOURCE" \
+            --print-provenance > prov_stmts.json 2> prov_verify.log
           code=$?
           set -e
+          echo "slsa-verifier exit: $code"
+          tail -2 prov_verify.log
           echo "verified=$([ $code -eq 0 ] && echo 1 || echo 0)" >> "$GITHUB_OUTPUT"
           
       - name: Verify scan attestations (cosign, workflow identity)
@@ -89,24 +100,9 @@ jobs:
           python3 scripts/decode_attestations.py scans_att.json "https://scs-lab.dev/scan-result/v1" > scans_stmts.json
           echo "decoded $(wc -l < scans_stmts.json | tr -d ' ') verified scan statement(s)"
 
-      # Native SLSA provenance attestation: signed by the generator's own
-      # workflow identity (tag-pinned), content is pinned by the predicate.
-      - name: Verify provenance attestation (cosign, generator identity)
-        env:
-          GEN_ID: "^https://github.com/slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@refs/tags/v2\\.[0-9]+\\.[0-9]+$"
-        run: |
-          set +e
-          cosign verify-attestation --output json \
-            --type "https://slsa.dev/provenance/v0.2" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            --certificate-identity-regexp "$GEN_ID" \
-            "$IMAGE@$DIGEST" > prov_att.json
-          code=$?
-          set -e
-          echo "cosign exit: $code"
-          python3 scripts/decode_attestations.py prov_att.json "https://slsa.dev/provenance/v0.2" > prov_stmts.json
-          echo "decoded $(wc -l < prov_stmts.json | tr -d ' ') verified provenance statement(s)"
-
+      # NOTE: cosign v3 stores scan-result attestations as OCI-referrer
+      # bundles (fallback tag scheme on GHCR) and verifies them with the
+      # caller workflow's Fulcio identity.
       - name: Collect changed paths
         env:
           REPO: ${{ github.repository }}
