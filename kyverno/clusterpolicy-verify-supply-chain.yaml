@@ -1,0 +1,51 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-supply-chain
+spec:
+  validationFailureAction: Enforce
+  webhookTimeoutSeconds: 90
+  rules:
+    - name: require-provenance-and-scan-attestations
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/rajumandala/supply-chain-lab:*"
+          mutateDigest: true
+          attestors:
+            - entries:
+                - keyless:
+                    issuer: https://token.actions.githubusercontent.com
+                    subject: "https://github.com/rajumandala/supply-chain-lab/.github/workflows/build.yml@refs/heads/main"
+                    rekor:
+                      url: https://rekor.sigstore.dev
+          attestations:
+            # SLSA L3 provenance (re-attached verified predicate from Rekor)
+            - predicateType: https://slsa.dev/provenance/v0.2
+              conditions:
+                - all:
+                    - key: "{{ invocation.configSource.uri }}"
+                      operator: Equals
+                      value: "git+https://github.com/rajumandala/supply-chain-lab@refs/heads/main.git"
+            # one signed scan-result attestation per tool
+            - predicateType: https://scs-lab.dev/scan-result/v1
+              conditions:
+                - all:
+                    - key: "{{ predicate.tool }}"
+                      operator: Equals
+                      value: sast
+            - predicateType: https://scs-lab.dev/scan-result/v1
+              conditions:
+                - all:
+                    - key: "{{ predicate.tool }}"
+                      operator: Equals
+                      value: sca
+            - predicateType: https://scs-lab.dev/scan-result/v1
+              conditions:
+                - all:
+                    - key: "{{ predicate.tool }}"
+                      operator: Equals
+                      value: secrets

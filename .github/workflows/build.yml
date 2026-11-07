@@ -1,0 +1,197 @@
+name: build
+
+# PRs: unit tests + SAST/SCA/secrets scans (gated by our policy).
+# main push / dispatch: additionally build+push image, generate SLSA L3
+# provenance, and attach signed scan-result attestation to the image digest.
+# NOTE: the slsa container generator does not support pull_request triggers,
+# so the image pipeline only runs on push/dispatch.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: pytest -q
+
+  scan:
+    name: scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # gitleaks scans git history too
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Semgrep (SAST)
+        run: |
+          pip install semgrep==1.184.0
+          echo "1.184.0" > semgrep.version
+          semgrep scan --config p/default --json --output semgrep.json --quiet || true
+      - name: Gitleaks (secrets, full history)
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz" | tar -xz
+          chmod +x gitleaks && sudo mv gitleaks /usr/local/bin/
+          echo "8.30.1" > gitleaks.version
+          gitleaks detect --no-banner --redact --report-format json --report-path gitleaks.json || true
+      - name: Trivy fs (SCA)
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.76.2
+          echo "0.76.2" > trivy.version
+          trivy fs --quiet --scanners vuln --format json --output trivy-fs.json --ignore-unfixed .
+      - name: Gate (our policy, not tool defaults)
+        run: python3 scripts/gate.py
+      - name: Save raw scan results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scan-results
+          path: |
+            semgrep.json
+            gitleaks.json
+            trivy-fs.json
+            semgrep.version
+            gitleaks.version
+            trivy.version
+          if-no-files-found: error
+
+  build:
+    name: build
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    outputs:
+      image: ${{ steps.image_out.outputs.image }}
+      digest: ${{ steps.build_push.outputs.digest }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build_push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          push: true
+          tags: ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+      - id: image_out
+        run: echo "image=${{ env.IMAGE }}" >> "$GITHUB_OUTPUT"
+
+  # Trusted builder: re-runs the build job and produces SLSA L3 provenance.
+  # Referenced by full tag (the generator rejects SHA refs by design).
+  provenance:
+    name: provenance
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: [build]
+    permissions:
+      actions: read
+      id-token: write
+      packages: write
+      contents: read
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
+    with:
+      image: ${{ needs.build.outputs.image }}
+      digest: ${{ needs.build.outputs.digest }}
+      registry-username: ${{ github.actor }}
+    secrets:
+      registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+  attest:
+    name: attest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: [scan, build, provenance]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # cosign keyless signing with GitHub OIDC
+    env:
+      IMAGE: ${{ needs.build.outputs.image }}
+      DIGEST: ${{ needs.build.outputs.digest }}
+      SOURCE: github.com/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: scan-results
+      - name: Install trivy + slsa-verifier + rekor-cli
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.76.2
+          echo "0.76.2" > trivy.version
+          curl -sSfL -o sv "https://github.com/slsa-framework/slsa-verifier/releases/download/v2.7.1/slsa-verifier-linux-amd64"
+          chmod +x sv && sudo mv sv /usr/local/bin/slsa-verifier
+          curl -sSfL -o rk "https://github.com/sigstore/rekor/releases/download/v1.5.5/rekor-cli-linux-amd64"
+          chmod +x rk && sudo mv rk /usr/local/bin/rekor-cli
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Trivy image scan (SCA part 2)
+        run: trivy image --quiet --format json --output trivy-image.json --ignore-unfixed "$IMAGE@$DIGEST"
+      - name: Gate with image results (evidence, no exit yet)
+        run: python3 scripts/gate.py --no-fail
+      - name: Verify generator provenance (Rekor) ...
+        run: |
+          set -euo pipefail
+          slsa-verifier verify-image "$IMAGE@$DIGEST" --source-uri "$SOURCE"
+          python3 scripts/rekor_provenance.py "$DIGEST" > prov.json
+          jq -e '.predicateType == "https://slsa.dev/provenance/v0.2"' prov.json > /dev/null
+          jq '.predicate' prov.json > prov.predicate.json
+          echo "provenance predicate verified and extracted"
+      - name: Attach each scan result as signed in-toto attestation
+        run: |
+          set -euo pipefail
+          for tool in sast sca secrets; do
+            python3 scripts/write_predicate.py "$tool" gate.json > "pred_${tool}.json"
+            cosign attest "$IMAGE@$DIGEST" \
+              --predicate "pred_${tool}.json" \
+              --type "https://scs-lab.dev/scan-result/v1"
+          done
+      - name: Re-attach verified SLSA provenance as OCI attestation
+        run: |
+          set -euo pipefail
+          cosign attest "$IMAGE@$DIGEST" \
+            --predicate prov.predicate.json \
+            --type "https://slsa.dev/provenance/v0.2"
+      - name: Save evidence artifact
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: evidence
+          path: |
+            gate.json
+            prov.json
+            prov.predicate.json
+            pred_*.json
+            trivy-image.json
+          if-no-files-found: error
+      - name: Enforce gate (our policy)
+        run: python3 scripts/gate.py --enforce-only
