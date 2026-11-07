@@ -42,7 +42,12 @@ for line in Path(prov_stmts_path).read_text().splitlines():
     stmt = json.loads(line)
     pred = stmt.get("predicate", {})
     prov["builder_id"] = (pred.get("builder") or {}).get("id", "")
-    prov["source"] = (pred.get("invocation") or {}).get("configSource", {}).get("uri", "")
+    src = (pred.get("invocation") or {}).get("configSource", {}).get("uri", "")
+    # slsa provenance stores "git+https://github.com/OWNER/REPO@refs/heads/main";
+    # normalize to what the OPA policy compares against.
+    if src.startswith("git+https://"):
+        src = src[len("git+https://"):]
+    prov["source"] = src.split("@")[0]
     if prov_verified:
         prov["verified"] = True
 
