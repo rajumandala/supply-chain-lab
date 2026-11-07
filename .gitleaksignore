@@ -1,0 +1,6 @@
+# demo/break-secret/app.py is a deliberate fixture for the README "break it"
+# demo. The secret below was committed once (the original commit below) and the
+# full-history scan keeps finding it, as it should. That historical finding is
+# expected and allowlisted here. Add a NEW fake secret (without this line) to
+# break the gate.
+ca96ba569b10a44359f3d2f7909d0773430a0cce:demo/break-secret/app.py:generic-api-key:5

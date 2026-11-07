@@ -19,7 +19,7 @@ import urllib.request
 
 def api(method, path, body=None, token=None):
     req = urllib.request.Request(
-        os.environ["MOCK_BASE_URL"].rstrip("/") + path,
+        os.environ["MOCK_BASE_URL"].rstrip("/") + path,  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected - base URL is supplied by the release environment, path is a constant
         method=method,
         headers={
             "Content-Type": "application/json",

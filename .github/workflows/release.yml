@@ -74,12 +74,14 @@ jobs:
           echo "verified=$([ $code -eq 0 ] && echo 1 || echo 0)" >> "$GITHUB_OUTPUT"
           
       - name: Verify scan attestations (cosign, workflow identity)
+        env:
+          REPO: ${{ github.repository }}
         run: |
           set +e
           cosign verify-attestation --output json \
             --type "https://scs-lab.dev/scan-result/v1" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/.github/workflows/build.yml@refs/heads/main\$" \
+            --certificate-identity-regexp "^https://github.com/$REPO/.github/workflows/build.yml@refs/heads/main\$" \
             "$IMAGE@$DIGEST" > scans_att.json
           code=$?
           set -e
@@ -88,12 +90,14 @@ jobs:
           echo "decoded $(wc -l < scans_stmts.json | tr -d ' ') verified scan statement(s)"
 
       - name: Verify re-attached provenance attestation (cosign)
+        env:
+          REPO: ${{ github.repository }}
         run: |
           set +e
           cosign verify-attestation --output json \
             --type "https://slsa.dev/provenance/v0.2" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/.github/workflows/build.yml@refs/heads/main\$" \
+            --certificate-identity-regexp "^https://github.com/$REPO/.github/workflows/build.yml@refs/heads/main\$" \
             "$IMAGE@$DIGEST" > prov_att.json
           code=$?
           set -e
@@ -102,10 +106,12 @@ jobs:
           echo "decoded $(wc -l < prov_stmts.json | tr -d ' ') verified provenance statement(s)"
 
       - name: Collect changed paths
+        env:
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr_number }}
         run: |
-          pr="${{ inputs.pr_number }}"
-          if [ -n "$pr" ] && [ "$pr" != "0" ]; then
-            gh api "repos/${{ github.repository }}/pulls/$pr/files" --paginate \
+          if [ -n "$PR_NUMBER" ] && [ "$PR_NUMBER" != "0" ]; then
+            gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate \
               --jq '.[].filename' > changed_paths.txt || true
           else
             : > changed_paths.txt
@@ -142,20 +148,25 @@ jobs:
       # ---- mock ServiceNow CR, evidence bound ----
       - name: File mock change request
         id: cr
+        env:
+          DECISION: ${{ steps.opa.outputs.decision }}
+          REASONS: ${{ steps.opa.outputs.reasons }}
+          MOCK_URL: ${{ inputs.mock_base_url }}
+          CR_TOKEN: ${{ secrets.MOCK_CR_TOKEN }}
         run: |
-          jq -n --arg decision "${{ steps.opa.outputs.decision }}" \
+          jq -n --arg decision "$DECISION" \
                 --arg digest "$DIGEST" --arg run_url "$RUN_URL" \
-                --arg reasons "${{ steps.opa.outputs.reasons }}" \
+                --arg reasons "$REASONS" \
                 --slurpfile evidence evidence.json \
                 '{decision: $decision, digest: $digest, run_url: $run_url,
                   reasons: $reasons, evidence: $evidence[0]}' > cr.json
-          resp="$(curl -fsS -X POST "${{ inputs.mock_base_url }}/change" \
-            -H "Authorization: Bearer ${{ secrets.MOCK_CR_TOKEN }}" \
+          resp="$(curl -fsS -X POST "$MOCK_URL/change" \
+            -H "Authorization: Bearer $CR_TOKEN" \
             -H "Content-Type: application/json" \
             --data @cr.json)"
           cid="$(echo "$resp" | jq -r '.id')"
           echo "cr_id=$cid" >> "$GITHUB_OUTPUT"
-          echo "mock CR filed: $cid (${{ inputs.mock_base_url }}/change/$cid)"
+          echo "mock CR filed: $cid ($MOCK_URL/change/$cid)"
 
       - name: Save evidence artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -182,12 +193,16 @@ jobs:
         run: |
           echo "decision: manual -> approval required in the 'release-approval' environment"
           echo "digest: $DIGEST"
-          echo "reasons: ${{ needs.decide.outputs.reasons }}"
+
       - name: Mark mock CR approved
+        env:
+          MOCK_URL: ${{ inputs.mock_base_url }}
+          CR_TOKEN: ${{ secrets.MOCK_CR_TOKEN }}
+          CR_ID: ${{ needs.decide.outputs.cr_id }}
         run: |
           curl -fsS -X POST \
-            "${{ inputs.mock_base_url }}/change/${{ needs.decide.outputs.cr_id }}/resolve" \
-            -H "Authorization: Bearer ${{ secrets.MOCK_CR_TOKEN }}" \
+            "$MOCK_URL/change/$CR_ID/resolve" \
+            -H "Authorization: Bearer $CR_TOKEN" \
             -H "Content-Type: application/json" \
             -d '{"approved": true, "note": "approved via release-approval environment"}'
 
