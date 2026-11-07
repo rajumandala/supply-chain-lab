@@ -89,15 +89,17 @@ jobs:
           python3 scripts/decode_attestations.py scans_att.json "https://scs-lab.dev/scan-result/v1" > scans_stmts.json
           echo "decoded $(wc -l < scans_stmts.json | tr -d ' ') verified scan statement(s)"
 
-      - name: Verify re-attached provenance attestation (cosign)
+      # Native SLSA provenance attestation: signed by the generator's own
+      # workflow identity (tag-pinned), content is pinned by the predicate.
+      - name: Verify provenance attestation (cosign, generator identity)
         env:
-          REPO: ${{ github.repository }}
+          GEN_ID: "^https://github.com/slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@refs/tags/v2\\.[0-9]+\\.[0-9]+$"
         run: |
           set +e
           cosign verify-attestation --output json \
             --type "https://slsa.dev/provenance/v0.2" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            --certificate-identity-regexp "^https://github.com/$REPO/.github/workflows/build.yml@refs/heads/main\$" \
+            --certificate-identity-regexp "$GEN_ID" \
             "$IMAGE@$DIGEST" > prov_att.json
           code=$?
           set -e

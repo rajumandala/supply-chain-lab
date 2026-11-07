@@ -147,12 +147,10 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: scan-results
-      - name: Install slsa-verifier + rekor-cli
+      - name: Install slsa-verifier
         run: |
           curl -sSfL -o sv "https://github.com/slsa-framework/slsa-verifier/releases/download/v2.7.1/slsa-verifier-linux-amd64"
           chmod +x sv && sudo mv sv /usr/local/bin/slsa-verifier
-          curl -sSfL -o rk "https://github.com/sigstore/rekor/releases/download/v1.5.5/rekor-cli-linux-amd64"
-          chmod +x rk && sudo mv rk /usr/local/bin/rekor-cli
           curl -sSfL -o ty "https://github.com/aquasecurity/trivy/releases/download/v0.76.2/trivy_0.76.2_Linux-64bit.tar.gz"
           tar -xzf ty trivy && sudo mv trivy /usr/local/bin/trivy && rm -f ty
           echo "0.76.2" > trivy.version
@@ -165,14 +163,21 @@ jobs:
         run: trivy image --quiet --format json --output trivy-image.json --ignore-unfixed "$IMAGE@$DIGEST"
       - name: Gate with image results (evidence, no exit yet)
         run: python3 scripts/gate.py --no-fail
-      - name: Verify generator provenance (Rekor) ...
+      # Native SLSA provenance IS attached to the image (generator, OCI .att
+      # manifest; rekor only duplicates the envelope hash). Require its content.
+      - name: Verify generator provenance (slsa-verifier + cosign presence)
+        env:
+          GEN_ID: ^https://github.com/slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@refs/tags/v2\.[0-9]+\.[0-9]+$
         run: |
           set -euo pipefail
           slsa-verifier verify-image "$IMAGE@$DIGEST" --source-uri "$SOURCE"
-          python3 scripts/rekor_provenance.py "$DIGEST" > prov.json
-          jq -e '.predicateType == "https://slsa.dev/provenance/v0.2"' prov.json > /dev/null
-          jq '.predicate' prov.json > prov.predicate.json
-          echo "provenance predicate verified and extracted"
+          cosign verify-attestation --output json \
+            --type "https://slsa.dev/provenance/v0.2" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-identity-regexp "$GEN_ID" \
+            "$IMAGE@$DIGEST" > prov_att.json
+          python3 scripts/decode_attestations.py prov_att.json "https://slsa.dev/provenance/v0.2" > prov_stmts.json
+          echo "provenance verified (slsa-verifier + cosign): $(wc -l < prov_stmts.json) statement(s)"
       - name: Attach each scan result as signed in-toto attestation
         run: |
           set -euo pipefail
@@ -182,12 +187,6 @@ jobs:
               --predicate "pred_${tool}.json" \
               --type "https://scs-lab.dev/scan-result/v1"
           done
-      - name: Re-attach verified SLSA provenance as OCI attestation
-        run: |
-          set -euo pipefail
-          cosign attest "$IMAGE@$DIGEST" \
-            --predicate prov.predicate.json \
-            --type "https://slsa.dev/provenance/v0.2"
       - name: Save evidence artifact
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -195,8 +194,7 @@ jobs:
           name: evidence
           path: |
             gate.json
-            prov.json
-            prov.predicate.json
+            prov_stmts.json
             pred_*.json
             trivy-image.json
           if-no-files-found: error

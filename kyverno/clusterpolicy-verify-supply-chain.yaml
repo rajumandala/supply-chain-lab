@@ -16,6 +16,8 @@ spec:
             - "ghcr.io/rajumandala/supply-chain-lab:*"
           mutateDigest: true
           attestors:
+            # image-level signature check is satisfied by the provenance
+            # attestation authority below (Kyverno falls back to it)
             - entries:
                 - keyless:
                     issuer: https://token.actions.githubusercontent.com
@@ -23,27 +25,56 @@ spec:
                     rekor:
                       url: https://rekor.sigstore.dev
           attestations:
-            # SLSA L3 provenance (re-attached verified predicate from Rekor)
+            # Native SLSA L3 provenance: signed by the generator's own identity,
+            # content-pinned to our repo@main.
             - predicateType: https://slsa.dev/provenance/v0.2
+              attestors:
+                - entries:
+                    - keyless:
+                        issuer: https://token.actions.githubusercontent.com
+                        subject: "https://github.com/slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@refs/tags/v2.1.0"
+                        rekor:
+                          url: https://rekor.sigstore.dev
               conditions:
                 - all:
                     - key: "{{ invocation.configSource.uri }}"
                       operator: Equals
                       value: "git+https://github.com/rajumandala/supply-chain-lab@refs/heads/main.git"
-            # one signed scan-result attestation per tool
+            # Three signed scan-result attestations, our build.yml identity.
             - predicateType: https://scs-lab.dev/scan-result/v1
+              attestors:
+                - entries:
+                    - keyless:
+                        issuer: https://token.actions.githubusercontent.com
+                        subject: "https://github.com/rajumandala/supply-chain-lab/.github/workflows/build.yml@refs/heads/main"
+                        rekor:
+                          url: https://rekor.sigstore.dev
               conditions:
                 - all:
                     - key: "{{ predicate.tool }}"
                       operator: Equals
                       value: sast
             - predicateType: https://scs-lab.dev/scan-result/v1
+              attestors:
+                - entries:
+                    - keyless:
+                        issuer: https://token.actions.githubusercontent.com
+                        subject: "https://github.com/rajumandala/supply-chain-lab/.github/workflows/build.yml@refs/heads/main"
+                        rekor:
+                          url: https://rekor.sigstore.dev
               conditions:
                 - all:
                     - key: "{{ predicate.tool }}"
                       operator: Equals
                       value: sca
             - predicateType: https://scs-lab.dev/scan-result/v1
+              attestors:
+                - entries:
+                    - keyless:
+                        issuer: https://token.actions.githubusercontent.com
+                        subject: "https://github.com/rajumandala/supply-chain-lab/.github/workflows/build.yml@refs/heads/main"
+                        rekor:
+                          url: https://rekor.sigstore.dev
               conditions:
                 - all:
                     - key: "{{ predicate.tool }}"
