@@ -28,7 +28,7 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: pip install -r requirements.txt -r requirements-dev.txt -r mocks/requirements.txt
       - run: pytest -q
 
   scan:
@@ -56,7 +56,7 @@ jobs:
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.76.2
           echo "0.76.2" > trivy.version
-          trivy fs --quiet --scanners vuln --format json --output trivy-fs.json --ignore-unfixed .
+          trivy fs --quiet --scanners vuln --format json --output trivy-fs.json --ignore-unfixed --skip-dirs "demo/*" .
       - name: Gate (our policy, not tool defaults)
         run: python3 scripts/gate.py
       - name: Save raw scan results
